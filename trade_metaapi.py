@@ -52,48 +52,20 @@ async def meta_api_synchronization():
         await connection.connect()
 
         # Wait until terminal state is synchronized to the local state
-        print('Waiting for SDK to synchronize to terminal state (may take some time depending on your history size)')
         await connection.wait_synchronized()
 
-        # Invoke RPC API (replace ticket numbers with actual ticket numbers that exist in your MT account)
-        print('Testing MetaAPI RPC API')
-        print('Account information:', await connection.get_account_information())
-        print('Positions:', await connection.get_positions())
-        # Uncomment and replace with a valid ticket number
-        # print(await connection.get_position('1234567'))
-        print('Open orders:', await connection.get_orders())
-        # Uncomment and replace with a valid order ID
-        # print(await connection.get_order('1234567'))
-        print('History orders by ticket:', await connection.get_history_orders_by_ticket('1234567'))
-        print('History orders by position:', await connection.get_history_orders_by_position('1234567'))
-        print(
-            'History orders (~last 3 months):',
-            await connection.get_history_orders_by_time_range(
-                datetime.utcnow() - timedelta(days=90), datetime.utcnow()
-            ),
-        )
-        print('History deals by ticket:', await connection.get_deals_by_ticket('1234567'))
-        print('History deals by position:', await connection.get_deals_by_position('1234567'))
-        print(
-            'History deals (~last 3 months):',
-            await connection.get_deals_by_time_range(datetime.utcnow() - timedelta(days=90), datetime.utcnow()),
-        )
-
-        print('Server time:', await connection.get_server_time())
-
-        # Calculate margin required for trade
-        print(
-            'Margin required for trade:',
-            await connection.calculate_margin(
-                {'symbol': 'GBPUSD', 'type': 'ORDER_TYPE_BUY', 'volume': 0.1, 'openPrice': 1.1}
-            ),
-        )
-
-        # Submit a pending order
-        print('Submitting pending order')
+        # Submit a market buy order (instant execution)
+        print('Submitting market buy order')
         try:
-            result = await connection.create_limit_buy_order(
-                'GBPUSD', 0.07, 1.0, 0.9, 2.0, {'comment': 'comm', 'clientId': 'TE_GBPUSD_7hyINWqAlE'}
+            result = await connection.create_market_buy_order(
+                'GBPUSD',  # Symbol
+                0.01,       # Volume (lot size)
+                1.0,       # Stop loss (optional, set to 0 to disable)
+                2.0,       # Take profit (optional, set to 0 to disable)
+                {
+                    'comment': 'Buy',  # Shortened comment
+                    'clientId': 'TE_GBPUSD_123'  # Shortened clientId
+                }
             )
             print('Trade successful, result code is ' + result['stringCode'])
         except Exception as err:
