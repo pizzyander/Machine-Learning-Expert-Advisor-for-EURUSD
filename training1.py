@@ -7,7 +7,7 @@ from keras.models import Sequential
 from keras.layers import LSTM, Dense
 from keras.callbacks import EarlyStopping
 from keras.optimizers import Adam
-from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error, r2_score
 import optuna
 import shap
 import datetime
@@ -19,7 +19,7 @@ def fetch_data(symbol, timeframe, n_candles):
     if not mt5.initialize():
         print("Failed to initialize MT5")
         quit()
-    
+
     utc_from = datetime.datetime.now() - datetime.timedelta(days=30)
     rates = mt5.copy_rates_from(symbol, timeframe, utc_from, n_candles)
     mt5.shutdown()
@@ -111,33 +111,38 @@ data['Std_Dev'] = data['close'].rolling(window=14).std()
 data['CV'] = data['Std_Dev'] / data['close'].rolling(window=14).mean()
 data['ROC'] = (data['close'] - data['close'].shift(14)) / data['close'].shift(14) * 100
 
-# Drop NaN rows
-data = data.dropna()
+# Fill NaN rows with synthetic data
+for col in data.columns:
+    if data[col].isna().sum() > 0:
+        data[col].fillna(data[col].mean(), inplace=True)
+
 prices = data['close'].values
 
 # Step 4: Preprocess Data
 scaler = MinMaxScaler()
 scaled_prices = scaler.fit_transform(prices.reshape(-1, 1))
-scaled_features = [
-    scaler.fit_transform(data[col].values.reshape(-1, 1)) for col in [
-        'EMA_10', 'SMA_10', 'RSI', 'MACD', 'Signal_Line',
-        'BB_Upper', 'BB_Lower', 'ATR', 'Stochastic',
-        'Donchian_Upper', 'Donchian_Lower', 'Std_Dev', 'ROC'
-    ]
+
+# Combine all features into a single dataframe
+feature_columns = [
+    'EMA_10', 'SMA_10', 'RSI', 'MACD', 'Signal_Line',
+    'BB_Upper', 'BB_Lower', 'ATR', 'Stochastic',
+    'Donchian_Upper', 'Donchian_Lower', 'Std_Dev', 'ROC'
 ]
+scaled_features = np.hstack([scaler.fit_transform(data[col].values.reshape(-1, 1)) for col in feature_columns])
+
 # Ensure all arrays have the same length
 min_length = min(
     len(scaled_prices), len(markov_probs),
-    *[len(feature) for feature in scaled_features]
+    *[len(scaled_features)]
 )
 
 # Truncate all arrays to the minimum length
 scaled_prices = scaled_prices[:min_length]
 markov_probs = markov_probs[:min_length]
-scaled_features = [feature[:min_length] for feature in scaled_features]
+scaled_features = scaled_features[:min_length]
 
 # Combine all features
-X = np.hstack([scaled_prices, markov_probs] + scaled_features)
+X = np.hstack([scaled_prices, markov_probs, scaled_features])
 y = price_changes[1:]
 
 # Create LSTM time-series data
@@ -182,7 +187,6 @@ study = optuna.create_study(direction='minimize')
 study.optimize(objective, n_trials=50)
 print(f"Best Parameters: {study.best_params}")
 
-
 # Step 6: Train Final Model
 units_1, units_2 = study.best_params['units_1'], study.best_params['units_2']
 learning_rate, batch_size = study.best_params['learning_rate'], study.best_params['batch_size']
@@ -197,34 +201,47 @@ model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
 early_stopping = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True)
 model.fit(X_train, y_train, epochs=50, batch_size=batch_size, validation_data=(X_test, y_test), callbacks=[early_stopping])
 
+# Save the trained model for FastAPI
+model.save('forex_lstm_model.h5')
 
-# Step 7: SHAP Explainability
-# Reshape X_train and X_test to 2D for SHAP (flatten time series data)
-X_train_2D = X_train.reshape(X_train.shape[0], -1)  # Flatten (samples, time_steps * features)
-X_test_2D = X_test.reshape(X_test.shape[0], -1)
-
-# Create SHAP explainer
-explainer = shap.KernelExplainer(lambda x: model.predict(x.reshape(-1, time_window, X.shape[1])), X_train_2D[:100])
-
-# Compute SHAP values for a subset of X_test
-shap_values = explainer.shap_values(X_test_2D[:10])
-
-# Plot SHAP summary
-shap.summary_plot(shap_values, X_test_2D[:10])
-
-
-# Step 8: Evaluate Model
+# Step 7: Evaluate Model
 predictions = model.predict(X_test)
 scaled_predictions = scaler.inverse_transform(predictions)
 actual_values = scaler.inverse_transform(y_test)
 
 rmse = math.sqrt(mean_squared_error(actual_values, scaled_predictions))
-mape = mean_absolute_percentage_error(actual_values, scaled_predictions) * 100
-print(f"\nModel Performance:\nRMSE: {rmse:.5f}\nMAPE: {mape:.2f}%")
+mape = mean_absolute_percentage_error(actual_values, scaled_predictions)
+r2 = r2_score(actual_values, scaled_predictions)
 
-# Plot Predictions
+import joblib
+
+# Save the feature and target scalers
+joblib.dump(scaler, 'price_scaler.pkl')
+
+# Compute accuracy as (100% - MAPE)
+accuracy = 100 - (mape * 100)
+
+print(f'RMSE: {rmse}')
+print(f'MAPE: {mape}')
+print(f'R2: {r2}')
+print(f'Accuracy: {accuracy:.2f}%')
+
+# Save accuracy and evaluation metrics
+metrics = {
+    "RMSE": rmse,
+    "MAPE": mape,
+    "R2": r2,
+    "Accuracy": accuracy
+}
+joblib.dump(metrics, 'evaluation_metrics.pkl')
+
+# Plot predictions vs. actual values
 plt.figure(figsize=(12, 6))
-plt.plot(actual_values, label='Actual Prices')
-plt.plot(scaled_predictions, label='Predicted Prices')
+plt.plot(actual_values, label='Actual', linestyle='dashed')
+plt.plot(scaled_predictions, label='Predicted')
 plt.legend()
+plt.title('Actual vs. Predicted Prices')
+plt.xlabel('Time')
+plt.ylabel('Price')
 plt.show()
+
