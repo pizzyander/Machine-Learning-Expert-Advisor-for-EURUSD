@@ -155,19 +155,24 @@ async def place_trade(predicted_price):
     # Take Profit (TP) is set to predicted price
     take_profit = predicted_price
     
-    # Place trade
+    # Define trailing stop loss parameters
+    trailing_stop = {"distance": 17}  # 17 pips trailing stop
+    
+    # Place trade with trailing stop loss
     if trade_direction == 'buy':
         result = await connection.create_market_buy_order(
-            symbol, lot_size, stop_loss, take_profit, {'comment': 'GRU Prediction'}
+            symbol, lot_size, stop_loss, take_profit, 
+            {'comment': 'GRU Prediction', 'trailingStopLoss': trailing_stop}
         )
     else:
         result = await connection.create_market_sell_order(
-            symbol, lot_size, stop_loss, take_profit, {'comment': 'GRU Prediction'}
+            symbol, lot_size, stop_loss, take_profit, 
+            {'comment': 'GRU Prediction', 'trailingStopLoss': trailing_stop}
         )
     
     # Send Telegram Notification
     message = (
-        f"📢 **New Trade Alert** 📢\n"
+        f"\U0001F4E2 **New Trade Alert** \U0001F4E2\n"
         f"Symbol: {symbol}\n"
         f"Direction: {trade_direction.upper()}\n"
         f"Entry Price: {entry_price:.5f}\n"
@@ -178,7 +183,6 @@ async def place_trade(predicted_price):
     send_telegram_message(message)
     
     print(f'Trade executed: {trade_direction} at {entry_price}, SL: {stop_loss}, TP: {take_profit}, result: {result}')
-
 
 async def main():
     """Main function to execute trading logic."""
