@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 from pydantic import BaseModel
 from keras.saving import register_keras_serializable
+import joblib
 
 # Register custom loss function if needed
 @register_keras_serializable()
@@ -11,7 +12,8 @@ def mse(y_true, y_pred):
 
 # Load the trained model with custom objects
 custom_objects = {'mse': mse}
-model = tf.keras.models.load_model("forex_lstm_model.h5", custom_objects=custom_objects)
+model = tf.keras.models.load_model("gru_model.keras", custom_objects=custom_objects)
+y_scaler = joblib.load('y_scaler.pkl')
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -23,18 +25,23 @@ class PredictionRequest(BaseModel):
 @app.post("/predict")
 def predict(data: PredictionRequest):
     try:
-        # Convert input data to NumPy array and reshape
+        # Convert input data to NumPy array
         features = np.array(data.features, dtype=np.float32)
-        features = features.reshape(1, features.shape[0], features.shape[1])  # Ensure correct shape for LSTM
+
+        # Ensure input is reshaped correctly
+        features = features.reshape(1, 30, 18)  # Match model's expected input shape
         
         # Perform inference
         prediction = model.predict(features)
+        
+        # Inverse transform the prediction
+        prediction = y_scaler.inverse_transform(prediction.reshape(-1, 1))  # Ensure correct shape
         
         # Return the prediction result
         return {"prediction": float(prediction[0][0])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.get("/")
 def home():
     return {"message": "Forex LSTM Model API is running!"}

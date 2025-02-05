@@ -5,7 +5,7 @@ url = "http://127.0.0.1:8000/predict"
 
 # Generate 50 time steps with 14 random float values
 data = {
-    "features": [[random.uniform(0, 1) for _ in range(17)] for _ in range(50)]
+    "features": [[1.2, 3.4, 5.6, 7.8]]
 }
 
 

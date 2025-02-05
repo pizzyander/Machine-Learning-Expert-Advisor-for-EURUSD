@@ -1,8 +1,9 @@
 import os
 import asyncio
 from metaapi_cloud_sdk import MetaApi
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
+import pandas as pd  # Import pandas
 
 # Load credentials from settings.json
 with open('settings.json', 'r') as file:
@@ -16,49 +17,62 @@ domain = settings.get('domain') or 'agiliumtrade.agiliumtrade.ai'  # Default to 
 
 async def retrieve_historical_candles():
     api = MetaApi(token, {'domain': domain})
+
     try:
         # Retrieve account details
         account = await api.metatrader_account_api.get_account(account_id)
 
         # Ensure account is deployed
-        print('Deploying account')
+        print('Deploying account...')
         if account.state != 'DEPLOYED':
             await account.deploy()
         else:
             print('Account already deployed')
 
         # Wait for connection to the broker
-        print('Waiting for API server to connect to broker (may take a couple of minutes)')
+        print('Waiting for API server to connect to broker...')
         if account.connection_status != 'CONNECTED':
             await account.wait_connected()
 
-        # Retrieve last 10K 1-minute candles
-        pages = 10
-        print(f'Downloading {pages}K latest candles for {symbol}')
+        # Retrieve last 12,000 six-hour candles (~3.5 years of data)
+        num_candles = 12000
+        print(f'Downloading {num_candles} latest H6 candles for {symbol}')
+        start_time = datetime.now(timezone.utc)  # Proper timezone-aware UTC datetime
+        # Start from current time
+        candles = []
+
         started_at = datetime.now().timestamp()
-        start_time = None
-        candles = None
 
-        for i in range(pages):
+        while len(candles) < num_candles:
             # Retrieve historical candles
-            new_candles = await account.get_historical_candles(symbol, '1m', start_time)
-            print(f'Downloaded {len(new_candles) if new_candles else 0} historical candles for {symbol}')
+            new_candles = await account.get_historical_candles(symbol, '4h', start_time)
 
-            if new_candles and len(new_candles):
-                candles = new_candles
+            if not new_candles:
+                print(f'No more historical data available. Stopping.')
+                break
 
-            if candles and len(candles):
-                # Adjust start time for the next batch
-                start_time = candles[0]['time']
-                print(f'First candle time is {start_time}')
+            candles.extend(new_candles)
+            print(f'Downloaded {len(new_candles)} candles. Total so far: {len(candles)}')
+
+            # Update start_time for the next batch
+            start_time = new_candles[0]['time'] - timedelta(hours=4)
+
+            # Stop if we have enough data
+            if len(candles) >= num_candles:
+                candles = candles[:num_candles]  # Trim excess candles
+                break
 
         if candles:
-            print(f'First candle is', candles[0])
-        print(f'Took {(datetime.now().timestamp() - started_at) * 1000:.2f} ms')
+            print(f'First candle: {candles[0]}')
+            print(f'Total retrieved: {len(candles)}')
+
+        # Convert candles to DataFrame
+        data = pd.DataFrame(candles)
+
+        print(f'Execution time: {(datetime.now().timestamp() - started_at) * 1000:.2f} ms')
 
     except Exception as err:
         print(api.format_error(err))
-    exit()
 
 # Run the function
 asyncio.run(retrieve_historical_candles())
