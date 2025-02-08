@@ -4,7 +4,7 @@ services:
   training:
     build: ./training
     volumes:
-      - model_storage:/app/models
+      - ./models:/app/models  
       - ./settings.json:/app/settings.json
     command: ["/bin/sh", "-c", "cron && tail -f /dev/null"]
     restart: unless-stopped
@@ -12,18 +12,15 @@ services:
   trade_execution:
     build: ./trade_execution
     volumes:
-      - model_storage:/app/models
+      - ./models:/app/models  
       - ./settings.json:/app/settings.json
     restart: unless-stopped
 
   rest_api:
     build: ./rest_api
     volumes:
-      - model_storage:/app/models
+      - ./models:/app/models  
       - ./settings.json:/app/settings.json
     ports:
       - "8000:8000"
     restart: unless-stopped
-
-volumes:
-  model_storage:

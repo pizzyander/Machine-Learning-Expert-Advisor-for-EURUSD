@@ -131,9 +131,9 @@ def prepare_data(data):
     y = data['close'].shift(-3).dropna().values.reshape(-1, 1)
     y_scaled = y_scaler.fit_transform(y)
 
-    with open("X_scaler.pkl", "wb") as f:
+    with open("/app/models/X_scaler.pkl", "wb") as f:
         pickle.dump(X_scaler, f)
-    with open("y_scaler.pkl", "wb") as f:
+    with open("/app/models/y_scaler.pkl", "wb") as f:
         pickle.dump(y_scaler, f)
 
     X_seq, y_seq = [], []
@@ -147,7 +147,7 @@ X, y = prepare_data(data)
 X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
 X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
-def train_model(X_train, y_train, X_val, y_val, save_path="gru_model.keras"):
+def train_model(X_train, y_train, X_val, y_val, save_path="/app/models/gru_model.keras"):
     model = Sequential([
         GRU(64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
         Dropout(0.3),

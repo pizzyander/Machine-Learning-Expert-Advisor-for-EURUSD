@@ -90,8 +90,8 @@ def scale_features(data):
     """Scales the computed features using a pre-saved MinMaxScaler."""
     if len(data) < 30:
         raise ValueError(f"Insufficient data: Expected at least 30 rows, got {len(data)}")
-
-    X_scaler = joblib.load('X_scaler.pkl')
+    scaler = "/app/models/X_scaler.pkl"
+    X_scaler = joblib.load(scaler)
     
     feature_columns = X_scaler.feature_names_in_
     

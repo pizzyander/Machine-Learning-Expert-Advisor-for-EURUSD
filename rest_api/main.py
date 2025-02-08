@@ -4,16 +4,18 @@ import numpy as np
 from pydantic import BaseModel
 from keras.saving import register_keras_serializable
 import joblib
+import sklearn
 
 # Register custom loss function if needed
 @register_keras_serializable()
 def mse(y_true, y_pred):
     return tf.keras.losses.mean_squared_error(y_true, y_pred)
-
+MODEL_PATH = "/app/models/gru_model.keras"
+scaler = "/app/models/y_scaler.pkl" 
 # Load the trained model with custom objects
 custom_objects = {'mse': mse}
-model = tf.keras.models.load_model("gru_model.keras", custom_objects=custom_objects)
-y_scaler = joblib.load('y_scaler.pkl')
+model = tf.keras.models.load_model(MODEL_PATH , custom_objects=custom_objects)
+y_scaler = joblib.load(scaler)
 
 # Initialize FastAPI app
 app = FastAPI()
