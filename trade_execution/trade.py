@@ -156,7 +156,12 @@ async def place_trade(predicted_price):
     take_profit = predicted_price
     
     # Define trailing stop loss parameters
-    trailing_stop = {"distance": 17}  # 17 pips trailing stop
+    trailing_stop = {
+        'distance': {
+            'distance': 17,
+            'units': 'RELATIVE_POINTS'
+        }
+    }  # 17 pips trailing stop
     
     # Place trade with trailing stop loss
     if trade_direction == 'buy':

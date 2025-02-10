@@ -4,7 +4,7 @@ joblib
 pandas
 requests
 metaapi-cloud-sdk
-scikit-learn
+scikit-learn==1.5.2
 aiocron
 requests
 

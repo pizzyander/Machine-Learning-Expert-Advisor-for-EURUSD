@@ -1,9 +1,13 @@
+import os
+import asyncio
+import json
 import numpy as np
 import pandas as pd
-import json
-import joblib
 import requests
-from datetime import datetime, timedelta
+from metaapi_cloud_sdk import MetaApi
+from datetime import datetime, timedelta, timezone
+from sklearn.preprocessing import MinMaxScaler
+import joblib
 
 # Load model scaler
 scaler_path = "./models/X_scaler.pkl"
@@ -12,32 +16,55 @@ scaler = joblib.load(scaler_path)
 # Backtest parameters
 initial_balance = 3000
 lot_size = 0.1
-tick_value = 1  # Adjust based on broker specifications
-trailing_stop_pips = 15
+tick_value = 10  # Adjust based on broker specifications
+trailing_stop_pips = 20
 pip_value = 0.0001  # Adjust for JPY pairs
 
-# Load historical data
-def generate_historical_data(num_candles=500):
-    np.random.seed(42)
-    timestamps = [datetime.now() - timedelta(minutes=5 * i) for i in range(num_candles)]
-    close_prices = np.cumsum(np.random.randn(num_candles) * 0.0005 + 1.1)
-    high_prices = close_prices + np.random.rand(num_candles) * 0.0003
-    low_prices = close_prices - np.random.rand(num_candles) * 0.0003
-    open_prices = close_prices + np.random.randn(num_candles) * 0.0002
-    volumes = np.random.randint(100, 1000, num_candles)
+# Load credentials
+with open('settings.json', 'r') as file:
+    settings = json.load(file)
+
+token = settings.get('metaapi_access_token')
+account_id = settings.get('metaapi_accountid')
+prediction_url = settings.get('prediction_url')  # FastAPI endpoint
+symbol = os.getenv('SYMBOL') or 'EURUSD'
+domain = settings.get('domain') or 'agiliumtrade.agiliumtrade.ai'
+TELEGRAM_BOT_TOKEN = settings.get('telegram_bot_token')
+TELEGRAM_CHAT_ID = settings.get('telegram_chat_id')
+
+async def retrieve_historical_candles():
+    api = MetaApi(token, {'domain': domain})
+    account = await api.metatrader_account_api.get_account(account_id)
+
+    if account.state != 'DEPLOYED':
+        await account.deploy()
+    if account.connection_status != 'CONNECTED':
+        await account.wait_connected()
+
+    num_candles = 500  # Increase this to get more data
+    start_time = datetime.now(timezone.utc)
+    candles = []
+
+    while len(candles) < num_candles:
+        new_candles = await account.get_historical_candles(symbol, '4h', start_time)
+        if not new_candles:
+            break
+        candles.extend(new_candles)
+        start_time = new_candles[0]['time'] - timedelta(hours=4)
+        if len(candles) >= num_candles:
+            break
+
+    data = pd.DataFrame(candles)
+
+    if not data.empty:
+        data = data[['time', 'open', 'high', 'low', 'close', 'tickVolume']]
+        data['time'] = pd.to_datetime(data['time'])
     
-    data = pd.DataFrame({
-        'time': timestamps,
-        'open': open_prices,
-        'high': high_prices,
-        'low': low_prices,
-        'close': close_prices,
-        'tickVolume': volumes
-    })
+    print(f"Retrieved {len(data)} candles.")  # Debugging line
+
     return data
 
 def compute_indicators(data):
-
     data['MACD'] = data['close'].ewm(span=12, adjust=False).mean() - data['close'].ewm(span=26, adjust=False).mean()
     data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
 
@@ -73,11 +100,17 @@ def scale_features(data):
 def send_to_fastapi(data):
     prediction_url = "http://localhost:8000/predict"
     response = requests.post(prediction_url, json={'features': data.tolist()})
-    return response.json().get('prediction')
+    prediction = response.json().get('prediction')
+    
+    if prediction is None:
+        print("Warning: Received invalid prediction from model! Proceeding with NaN prediction.")
+        return np.nan
+    
+    return prediction
 
-def backtest():
+async def backtest():
     global initial_balance
-    df = generate_historical_data()
+    df = await retrieve_historical_candles()
     df = compute_indicators(df)
     trades = []
     balance = initial_balance
@@ -86,21 +119,24 @@ def backtest():
         scaled_features = scale_features(df.iloc[i-30:i])
         predicted_price = send_to_fastapi(scaled_features)
         
-        if predicted_price:
-            entry_price = df.iloc[i]['close']
-            sl_price = entry_price - (trailing_stop_pips * pip_value)
-            tp_price = predicted_price
-            trade_result = (tp_price - entry_price) * (10 / pip_value) * lot_size
-            balance += trade_result
-            
-            trades.append({
-                'time': df.iloc[i]['time'],
-                'entry_price': entry_price,
-                'stop_loss': sl_price,
-                'take_profit': tp_price,
-                'profit_loss': trade_result,
-                'balance': balance
-            })
+        entry_price = df.iloc[i]['close']
+        sl_price = entry_price - (trailing_stop_pips * pip_value)
+        tp_price = predicted_price if not np.isnan(predicted_price) else entry_price  # Use entry price if prediction is NaN
+        
+        trade_result = (tp_price - entry_price) / pip_value * lot_size * tick_value
+        balance += trade_result
+        
+        trades.append({
+            'time': df.iloc[i]['time'],
+            'entry_price': entry_price,
+            'stop_loss': sl_price,
+            'take_profit': tp_price,
+            'profit_loss': trade_result,
+            'balance': balance
+        })
+        
+        if trade_result < 0:
+            print(f"Warning: Large loss detected! Trade result: {trade_result:.2f}")
     
     results = pd.DataFrame(trades)
     print(results.tail(10))
@@ -108,4 +144,4 @@ def backtest():
     return results
 
 if __name__ == "__main__":
-    backtest()
+    asyncio.run(backtest())
