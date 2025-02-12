@@ -152,14 +152,15 @@ async def place_trade(predicted_price):
     sl_pips = 17 * PIP_VALUE  # Adjust for JPY pairs if needed
     stop_loss = entry_price - sl_pips if trade_direction == 'buy' else entry_price + sl_pips
     
-    # Take Profit (TP) is set to predicted price
-    take_profit = predicted_price
+    # Take Profit (TP) is set 60 pips away from entry price
+    tp_pips = 60 * PIP_VALUE
+    take_profit = entry_price + tp_pips if trade_direction == 'buy' else entry_price - tp_pips
     
     # Define trailing stop loss parameters
     trailing_stop = {
         'distance': {
             'distance': 17,
-            'units': 'RELATIVE_POINTS'
+            'units': 'RELATIVE_PIPS'
         }
     }  # 17 pips trailing stop
     
@@ -182,7 +183,7 @@ async def place_trade(predicted_price):
         f"Direction: {trade_direction.upper()}\n"
         f"Entry Price: {entry_price:.5f}\n"
         f"Stop Loss: {stop_loss:.5f}\n"
-        f"Take Profit: {take_profit:.5f}\n"
+        f"Take Profit: {take_profit:.5f} (60 pips away)\n"
         f"Trailing Stop: 17 pips"
     )
     send_telegram_message(message)
