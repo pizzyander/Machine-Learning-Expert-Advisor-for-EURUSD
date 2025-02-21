@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: models-pv
+spec:
+  storageClassName: standard-rwo  # Add this line to match PVC
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  gcePersistentDisk:
+    pdName: models-disk
+    fsType: ext4
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: models-pv
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: settings-secret
+  labels:
+    app: settings
+stringData:
+  settings.json: |-
+    {"api_key": "your_api_key_here", "other_sensitive_data": "value"}
+
+type: Opaque
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: training
+  template:
+    metadata:
+      labels:
+        app: training
+    spec:
+      restartPolicy: Always
+      volumes:
+        - name: models-storage
+          persistentVolumeClaim:
+            claimName: models-pvc
+        - name: settings-volume
+          secret:
+            secretName: settings-secret
+      containers:
+        - name: training-container
+          image: gcr.io/printerrrr-450808/training:latest
+          volumeMounts:
+            - name: models-storage
+              mountPath: /app/models
+            - name: settings-volume
+              mountPath: /app/settings.json
+              subPath: settings.json
+          command: ["/bin/sh", "-c", "cron && tail -f /dev/null"]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trade-execution
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trade-execution
+  template:
+    metadata:
+      labels:
+        app: trade-execution
+    spec:
+      restartPolicy: Always
+      volumes:
+        - name: models-storage
+          persistentVolumeClaim:
+            claimName: models-pvc
+        - name: settings-volume
+          secret:
+            secretName: settings-secret
+      containers:
+        - name: trade-execution-container
+          image: gcr.io/printerrrr-450808/trade_execution:latest
+          volumeMounts:
+            - name: models-storage
+              mountPath: /app/models
+            - name: settings-volume
+              mountPath: /app/settings.json
+              subPath: settings.json
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rest-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rest-api
+  template:
+    metadata:
+      labels:
+        app: rest-api
+    spec:
+      restartPolicy: Always
+      volumes:
+        - name: models-storage
+          persistentVolumeClaim:
+            claimName: models-pvc
+        - name: settings-volume
+          secret:
+            secretName: settings-secret
+      containers:
+        - name: rest-api-container
+          image: gcr.io/printerrrr-450808/rest_api:latest
+          volumeMounts:
+            - name: models-storage
+              mountPath: /app/models
+            - name: settings-volume
+              mountPath: /app/settings.json
+              subPath: settings.json
+          ports:
+            - containerPort: 8000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rest-api-service
+spec:
+  selector:
+    app: rest-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: LoadBalancer
