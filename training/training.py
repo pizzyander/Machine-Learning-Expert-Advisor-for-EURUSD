@@ -1,28 +1,29 @@
-import os
 import asyncio
 import json
 import numpy as np
 import pandas as pd
-import joblib
 import pickle
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
 from sklearn.preprocessing import MinMaxScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import GRU, Dropout, Dense
 from tensorflow.keras.callbacks import EarlyStopping
 from metaapi_cloud_sdk import MetaApi
+import os
 
-# Load credentials from settings.json
-with open('settings.json', 'r') as file:
+# Define the storage directory inside a mounted volume
+MODELS_DIR = os.path.abspath("models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Load credentials from a mounted settings.json file
+settings_path = settings_path = "settings.json"
+with open(settings_path, 'r') as file:
     settings = json.load(file)
 
 token = settings.get('metaapi_access_token')
 account_id = settings.get('metaapi_accountid')
-symbol = os.getenv('SYMBOL') or 'EURUSD'
+symbol = 'EURUSD'
 domain = settings.get('domain') or 'agiliumtrade.agiliumtrade.ai'
 
 async def retrieve_historical_candles():
@@ -51,8 +52,8 @@ async def retrieve_historical_candles():
     df = pd.DataFrame(candles)
     
     if not df.empty:
-        df = df[['time', 'open', 'high', 'low', 'close', 'tickVolume']]  # Keep only relevant columns
-        df['time'] = pd.to_datetime(df['time'])  # Convert time column to datetime
+        df = df[['time', 'open', 'high', 'low', 'close', 'tickVolume']]
+        df['time'] = pd.to_datetime(df['time'])
     return df
 
 # Load and preprocess data
@@ -64,7 +65,6 @@ price_changes = np.diff(prices)
 price_states = ['Up' if change > 0.001 else 'Down' if change < -0.001 else 'Stable' for change in price_changes]
 state_encoder = LabelEncoder()
 state_encoded = state_encoder.fit_transform(price_states)
-
 
 def compute_indicators(data):
     
@@ -118,7 +118,6 @@ def compute_indicators(data):
     indicators = list(indicators.keys())
     return indicators
 
-
 # Prepare data for training
 def prepare_data(data):
     indicators = compute_indicators(data)
@@ -131,9 +130,9 @@ def prepare_data(data):
     y = data['close'].shift(-3).dropna().values.reshape(-1, 1)
     y_scaled = y_scaler.fit_transform(y)
 
-    with open("/app/models/X_scaler.pkl", "wb") as f:
+    with open(os.path.join(MODELS_DIR, "X_scaler.pkl"), "wb") as f:
         pickle.dump(X_scaler, f)
-    with open("/app/models/y_scaler.pkl", "wb") as f:
+    with open(os.path.join(MODELS_DIR, "y_scaler.pkl"), "wb") as f:
         pickle.dump(y_scaler, f)
 
     X_seq, y_seq = [], []
@@ -147,40 +146,112 @@ X, y = prepare_data(data)
 X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
 X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
-def train_model(X_train, y_train, X_val, y_val, save_path="/app/models/gru_model.keras"):
-    model = Sequential([
-        GRU(64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
-        Dropout(0.3),
-        GRU(64),
-        Dropout(0.3),
-        Dense(1, activation='linear')  # Corrected activation
-    ])
-    
-    early_stop = EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
-    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
-    
-    history = model.fit(X_train, y_train, epochs=50, batch_size=8, validation_data=(X_val, y_val), callbacks=[early_stop])
-    
-    model.save(save_path)
-    print(f"Model saved at {save_path}.")
-    return model, history
+import os
+import tensorflow as tf
+import keras_tuner as kt
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import GRU, Dense, Dropout, BatchNormalization, LeakyReLU
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
-# Train model with fixes
-model, history = train_model(X_train, y_train, X_val, y_val)
+# Define the model-building function for hyperparameter tuning
+def build_model(hp):
+    model = Sequential()
+
+    # First GRU layer
+    model.add(GRU(hp.Int('gru_units_1', min_value=64, max_value=256, step=64), 
+                  return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+    model.add(Dropout(hp.Float('dropout_1', min_value=0.2, max_value=0.5, step=0.1)))
+    model.add(BatchNormalization())
+
+    # Second GRU layer
+    model.add(GRU(hp.Int('gru_units_2', min_value=64, max_value=256, step=64), return_sequences=True))
+    model.add(Dropout(hp.Float('dropout_2', min_value=0.2, max_value=0.5, step=0.1)))
+    model.add(BatchNormalization())
+
+    # Third GRU layer
+    model.add(GRU(hp.Int('gru_units_3', min_value=32, max_value=128, step=32), return_sequences=True))
+    model.add(Dropout(hp.Float('dropout_3', min_value=0.2, max_value=0.5, step=0.1)))
+    model.add(BatchNormalization())
+
+    # Fourth GRU layer
+    model.add(GRU(hp.Int('gru_units_4', min_value=32, max_value=128, step=32)))
+    model.add(Dropout(hp.Float('dropout_4', min_value=0.2, max_value=0.5, step=0.1)))
+    model.add(BatchNormalization())
+
+    # Fully connected layers
+    model.add(Dense(hp.Int('dense_units', min_value=32, max_value=128, step=32)))
+    model.add(LeakyReLU(alpha=0.1))
+    model.add(Dense(1, activation='linear'))
+
+    # Compile the model
+    optimizer = Adam(learning_rate=hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='LOG'))
+    model.compile(optimizer=optimizer, loss='mse', metrics=['mae'])
+    
+    return model
+
+# Hyperparameter search
+tuner = kt.BayesianOptimization(
+    build_model,
+    objective='val_loss',
+    max_trials=10,  # Number of hyperparameter combinations to try
+    executions_per_trial=1,
+    directory='hyperparameter_tuning',
+    project_name='GRU_Tuning'
+)
+
+# Search for best hyperparameters
+tuner.search(X_train, y_train, epochs=20, batch_size=16, validation_data=(X_val, y_val), 
+             callbacks=[EarlyStopping(monitor="val_loss", patience=5)])
+
+# Get best hyperparameters and train final model
+best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+model = tuner.hypermodel.build(best_hps)
+
+# Callbacks for training
+early_stop = EarlyStopping(monitor="val_loss", patience=6, restore_best_weights=True)
+reduce_lr = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6)
+
+history = model.fit(X_train, y_train, epochs=100, batch_size=16, 
+                    validation_data=(X_val, y_val), callbacks=[early_stop, reduce_lr])
+
+# Save model after training
+model_save_path = os.path.join(MODELS_DIR, "gru_model.keras")
+model.save(model_save_path)
+print(f"Optimized Model saved at {model_save_path}.")
+
 
 # Evaluate the model
-def evaluate_model(model, X_test, y_test):
-    with open("y_scaler.pkl", "rb") as f:
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def evaluate_model(model, X_test, y_test, history):
+    with open(os.path.join(MODELS_DIR, "y_scaler.pkl"), "rb") as f:
         y_scaler = pickle.load(f)
 
     y_pred = model.predict(X_test)
     y_pred_inversed = y_scaler.inverse_transform(y_pred)
     y_test_inversed = y_scaler.inverse_transform(y_test.reshape(-1, 1))
 
-    print("Predictions vs. Actual:")
-    print(f"Predicted: {y_pred_inversed[:5].flatten()}")
-    print(f"Actual: {y_test_inversed[:5].flatten()}")
+    # Print the most recent 20 actual and predicted prices
+    print("Most recent 20 actual prices:")
+    print(y_test_inversed[-20:].flatten())
+
+    print("\nMost recent 20 predicted prices:")
+    print(y_pred_inversed[-20:].flatten())
+
+    # Plot predictions vs actual values
+    plt.figure(figsize=(14, 6))
+    plt.plot(y_test_inversed, label="Actual Prices", color='blue', alpha=0.7)
+    plt.plot(y_pred_inversed, label="Predicted Prices", color='red', linestyle="dashed", alpha=0.7)
+    plt.xlabel("Time Steps")
+    plt.ylabel("Price")
+    plt.title("Predicted vs. Actual Prices")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
     return y_pred_inversed, y_test_inversed
 
-evaluate_model(model, X_test, y_test)
-print(X_train.shape, y_train.shape)
+# Call evaluation function
+y_pred_inversed, y_test_inversed = evaluate_model(model, X_test, y_test, history)

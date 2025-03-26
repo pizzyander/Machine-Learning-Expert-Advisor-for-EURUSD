@@ -10,8 +10,8 @@ import sklearn
 @register_keras_serializable()
 def mse(y_true, y_pred):
     return tf.keras.losses.mean_squared_error(y_true, y_pred)
-MODEL_PATH = "/app/models/gru_model.keras"
-scaler = "/app/models/y_scaler.pkl" 
+MODEL_PATH = "models/gru_model.keras"
+scaler = "models/y_scaler.pkl"
 # Load the trained model with custom objects
 custom_objects = {'mse': mse}
 model = tf.keras.models.load_model(MODEL_PATH , custom_objects=custom_objects)
@@ -38,7 +38,7 @@ def predict(data: PredictionRequest):
         
         # Inverse transform the prediction
         prediction = y_scaler.inverse_transform(prediction.reshape(-1, 1))  # Ensure correct shape
-        
+
         # Return the prediction result
         return {"prediction": float(prediction[0][0])}
     except Exception as e:

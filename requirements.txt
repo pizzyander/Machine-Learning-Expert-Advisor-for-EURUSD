@@ -11,3 +11,5 @@ scikit-learn
 aiocron
 matplotlib
 uvicorn
+keras-tuner
+seaborn

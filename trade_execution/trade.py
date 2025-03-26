@@ -135,7 +135,7 @@ def send_telegram_message(message):
 PIP_VALUE = 0.0001  # Adjust if using JPY pairs (0.01)
 
 async def place_trade(predicted_price):
-    """Places a trade based on the predicted price using MetaAPI."""
+    """Places a trade with dynamic lot sizing where SL is 1% of balance and TP is 3x SL."""
     api = MetaApi(token)
     account = await api.metatrader_account_api.get_account(account_id)
     await account.deploy()
@@ -143,28 +143,40 @@ async def place_trade(predicted_price):
     connection = account.get_rpc_connection()
     await connection.connect()
     await connection.wait_synchronized()
-    
+
+    # Retrieve account balance
+    account_info = await connection.get_account_information()
+    balance = account_info['balance']
+
+    # Retrieve latest market price
     latest_price = await connection.get_symbol_price(symbol)
     entry_price = latest_price['ask'] if predicted_price > latest_price['ask'] else latest_price['bid']
     trade_direction = 'buy' if predicted_price > latest_price['ask'] else 'sell'
-    
-    # Calculate Stop Loss (SL) based on 17-pip trailing stop
-    sl_pips = 17 * PIP_VALUE  # Adjust for JPY pairs if needed
+
+    # Calculate Stop Loss (SL) in money terms
+    risk_amount = balance * 0.01  # 1% risk of balance
+    tick_value = 10  # Approximate tick value for most pairs (adjust based on broker)
+
+    # Determine lot size so SL in pips equals risk amount
+    lot_size = max(0.01, round(risk_amount / (sl_pips * tick_value), 2))  # Adjust for minimum lot size 0.01
+
+    # Convert SL to price value
+    sl_pips = risk_amount / (lot_size * tick_value)  # Stop loss in pips
     stop_loss = entry_price - sl_pips if trade_direction == 'buy' else entry_price + sl_pips
-    
-    # Take Profit (TP) is set 60 pips away from entry price
-    tp_pips = 60 * PIP_VALUE
+
+    # Take Profit (TP) is 3x Stop Loss
+    tp_pips = sl_pips * 3
     take_profit = entry_price + tp_pips if trade_direction == 'buy' else entry_price - tp_pips
-    
+
     # Define trailing stop loss parameters
     trailing_stop = {
         'distance': {
-            'distance': 17,
+            'distance': sl_pips,
             'units': 'RELATIVE_PIPS'
         }
-    }  # 17 pips trailing stop
-    
-    # Place trade with trailing stop loss
+    }
+
+    # Place trade
     if trade_direction == 'buy':
         result = await connection.create_market_buy_order(
             symbol, lot_size, stop_loss, take_profit, 
@@ -175,20 +187,22 @@ async def place_trade(predicted_price):
             symbol, lot_size, stop_loss, take_profit, 
             {'comment': 'GRU Prediction', 'trailingStopLoss': trailing_stop}
         )
-    
+
     # Send Telegram Notification
     message = (
         f"\U0001F4E2 **New Trade Alert** \U0001F4E2\n"
         f"Symbol: {symbol}\n"
         f"Direction: {trade_direction.upper()}\n"
         f"Entry Price: {entry_price:.5f}\n"
-        f"Stop Loss: {stop_loss:.5f}\n"
-        f"Take Profit: {take_profit:.5f} (60 pips away)\n"
-        f"Trailing Stop: 17 pips"
+        f"Lot Size: {lot_size}\n"
+        f"Stop Loss: {stop_loss:.5f} ({sl_pips:.2f} pips)\n"
+        f"Take Profit: {take_profit:.5f} ({tp_pips:.2f} pips)\n"
+        f"Risk: {risk_amount:.2f} ({1}% of balance)\n"
+        f"Trailing Stop: {sl_pips:.2f} pips"
     )
     send_telegram_message(message)
-    
-    print(f'Trade executed: {trade_direction} at {entry_price}, SL: {stop_loss}, TP: {take_profit}, result: {result}')
+
+    print(f'Trade executed: {trade_direction} at {entry_price}, SL: {stop_loss}, TP: {take_profit}, Lot: {lot_size}, Result: {result}')
 
 async def main():
     """Main function to execute trading logic."""
