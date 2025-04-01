@@ -31,7 +31,7 @@ def predict(data: PredictionRequest):
         features = np.array(data.features, dtype=np.float32)
 
         # Ensure input is reshaped correctly
-        features = features.reshape(1, 30, 18)  # Match model's expected input shape
+        features = features.reshape(1, 30, 22)  # Match model's expected input shape
         
         # Perform inference
         prediction = model.predict(features)

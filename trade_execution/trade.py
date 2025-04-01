@@ -34,32 +34,45 @@ async def retrieve_historical_candles():
     if account.connection_status != 'CONNECTED':
         await account.wait_connected()
 
-    num_candles = 100  # Increase this to get more data
-    start_time = datetime.now(timezone.utc)
+    num_candles = 500  # Fetch 500 candles
+    start_time = datetime.now(timezone.utc)  # Start from the latest available time
     candles = []
 
     while len(candles) < num_candles:
         new_candles = await account.get_historical_candles(symbol, '4h', start_time)
         if not new_candles:
-            break
-        candles.extend(new_candles)
-        start_time = new_candles[0]['time'] - timedelta(hours=4)
-        if len(candles) >= num_candles:
-            break
+            break  # Stop if no new candles are retrieved
 
-    data = pd.DataFrame(candles)
+        candles.extend(new_candles)
+        start_time = pd.to_datetime(new_candles[-1]['time']) - timedelta(hours=4)  # Go back further
+
+        if len(candles) >= num_candles:
+            break  # Stop once we reach 500 candles
+
+    # Convert to DataFrame
+    data = pd.DataFrame(candles[:num_candles])  # Limit to 10,000 candles
 
     if not data.empty:
         data = data[['time', 'open', 'high', 'low', 'close', 'tickVolume']]
-        data['time'] = pd.to_datetime(data['time'])
-    
-    print(f"Retrieved {len(data)} candles.")  # Debugging line
+        data['time'] = pd.to_datetime(data['time'])  # Ensure correct datetime format
 
+    print(f"Retrieved {len(data)} candles.")  # Debugging line
+    
+    # Ensure 'models' directory exists
+    models_dir = 'models'
+    os.makedirs(models_dir, exist_ok=True)
+
+    # Save DataFrame as CSV
+    csv_path = os.path.join(models_dir, 'data.csv')
+    data.to_csv(csv_path, index=False)
+
+    print(f"Data saved to {csv_path}")
     return data
 
+# Load and preprocess data
+data = asyncio.run(retrieve_historical_candles())
 
-def compute_indicators(data):
-    
+def compute_indicators(data): 
     data['MACD'] = data['close'].ewm(span=12, adjust=False).mean() - data['close'].ewm(span=26, adjust=False).mean()
     data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
 
@@ -84,31 +97,63 @@ def compute_indicators(data):
     data['Std_Dev'] = data['close'].rolling(window=14).std()
     data['OBV'] = (np.sign(data['close'].diff()) * data['tickVolume']).cumsum()
     data['ADL'] = ((data['close'] - data['low']) - (data['high'] - data['close'])) / (data['high'] - data['low']) * data['tickVolume']
-    return data
+
+    return data  # Return the modified DataFrame with indicators added
 
 def scale_features(data):
-    """Scales the computed features using a pre-saved MinMaxScaler."""
-    if len(data) < 30:
-        raise ValueError(f"Insufficient data: Expected at least 30 rows, got {len(data)}")
-    scaler = "/app/models/X_scaler.pkl"
-    X_scaler = joblib.load(scaler)
+ 
+   # Compute and add indicators to data
+    data = compute_indicators(data)
+
+    # Fill NaN values with column means
+    data.fillna(data.mean(), inplace=True)
+
+    #drop time column
+    data = data.drop(columns=["time"])
+    for col in data.columns:
+        print(col)
+    import os
+    import joblib
+
+    base_dir = "c:/Users/hp/Machine-Learning-Expert-Advisor-for-EURUSD"
+    scaler_path = os.path.join(base_dir, "models", "X_scaler.pkl")
+
+    if os.path.exists(scaler_path):
+        X_scaler = joblib.load(scaler_path)
+    else:
+        raise FileNotFoundError(f"Scaler file not found at {scaler_path}. Ensure the model is trained and saved.")
+
     
-    feature_columns = X_scaler.feature_names_in_
+        # Select features (excluding 'close')
+    features = [col for col in data.columns if col != 'close']
     
-    # Fill NaN values with 0 to avoid issues
-    data = data[feature_columns].fillna(0)
+    X = data[features].values  # Convert to NumPy array
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+
+    scaled_data = X_scaler.transform(X)
+
+    # Apply random masking to part of the data
+    mask_prob = 0.1
+    mask = np.random.rand(*scaled_data.shape) < mask_prob
+    scaled_data[:, 1:3] = np.where(mask[:, 1:3], 0, scaled_data[:, 1:3]) 
     
-    # Ensure correct feature shape before transforming
-    scaled_data = X_scaler.transform(data[-30:])
-    
-    return scaled_data.reshape(1, 30, -1)  # Allow dynamic feature count
+    # slice last 30 observations
+    scaled_data = scaled_data[-300:]
+    scaled_data = np.array(scaled_data)  # Convert list to NumPy array
+      
+    return scaled_data.reshape(1, 30, -1)  # Ensure correct shape
 
 
-def send_to_fastapi(data):
+
+scaled_data = scale_features(data)
+print("Scaled features shape:", scaled_data.shape)
+
+def send_to_fastapi(scaled_data):
     """Sends the scaled data to FastAPI endpoint and gets prediction."""
-    response = requests.post(prediction_url, json={'features': data.tolist()})
+    print("Scaled features shape before sending:", scaled_data.shape)
+    response = requests.post(prediction_url, json={'features': scaled_data.tolist()})
     print("FastAPI Response:", response.json())  # Debugging line
-
     return response.json().get('prediction')
 
 def send_telegram_message(message): 
@@ -127,9 +172,6 @@ def send_telegram_message(message):
             logging.error(f"Failed to send Telegram message: {response.status_code}")
     except Exception as e:
         logging.error(f"Error sending Telegram message: {str(e)}")
-
-
-
 
 # Set pip value for calculating stop loss
 PIP_VALUE = 0.0001  # Adjust if using JPY pairs (0.01)
@@ -218,19 +260,15 @@ async def main():
         print(f"Insufficient data: Expected at least 30 rows, got {len(data)}")
         return
 
-    scaled_features = scale_features(data.iloc[-30:])
+    scaled_data = scale_features(data.iloc[-30:])
 
-    print("Scaled features shape:", scaled_features.shape)
+    print("Scaled features shape:", scaled_data.shape)
 
-    predicted_price = send_to_fastapi(scaled_features)
+    predicted_price = send_to_fastapi(scaled_data)
 
     if predicted_price is not None:
         await place_trade(predicted_price)
     else:
         print("No valid prediction received.")
 
-# Schedule execution every 4 hours at 5 minutes past (11:05 PM, 3:05 AM, etc.)
-aiocron.crontab("5 23,3,7,11,15,19 * * *", func=main)
-
-# Keep the script running indefinitely
-asyncio.get_event_loop().run_forever()
+asyncio.run(main())

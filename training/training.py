@@ -29,45 +29,41 @@ domain = settings.get('domain') or 'agiliumtrade.agiliumtrade.ai'
 async def retrieve_historical_candles():
     api = MetaApi(token, {'domain': domain})
     account = await api.metatrader_account_api.get_account(account_id)
-    
+
     if account.state != 'DEPLOYED':
         await account.deploy()
     if account.connection_status != 'CONNECTED':
         await account.wait_connected()
-    
-    num_candles = 20000
-    start_time = datetime.now(timezone.utc)
+
+    num_candles = 30000  # Fetch 10,000 candles
+    start_time = datetime.now(timezone.utc)  # Start from the latest available time
     candles = []
-    
+
     while len(candles) < num_candles:
         new_candles = await account.get_historical_candles(symbol, '4h', start_time)
         if not new_candles:
-            break
-        candles.extend(new_candles)
-        start_time = new_candles[0]['time'] - timedelta(hours=4)
-        if len(candles) >= num_candles:
-            candles = candles[:num_candles]
-            break
+            break  # Stop if no new candles are retrieved
 
-    df = pd.DataFrame(candles)
-    
-    if not df.empty:
-        df = df[['time', 'open', 'high', 'low', 'close', 'tickVolume']]
-        df['time'] = pd.to_datetime(df['time'])
-    return df
+        candles.extend(new_candles)
+        start_time = pd.to_datetime(new_candles[-1]['time']) - timedelta(hours=4)  # Go back further
+
+        if len(candles) >= num_candles:
+            break  # Stop once we reach 10,000 candles
+
+    # Convert to DataFrame
+    data = pd.DataFrame(candles[:num_candles])  # Limit to 10,000 candles
+
+    if not data.empty:
+        data = data[['time', 'open', 'high', 'low', 'close', 'tickVolume']]
+        data['time'] = pd.to_datetime(data['time'])  # Ensure correct datetime format
+
+    print(f"Retrieved {len(data)} candles.")  # Debugging line
+    return data
 
 # Load and preprocess data
 data = asyncio.run(retrieve_historical_candles())
-prices = data['close'].values
 
-# Compute price changes and label encoding
-price_changes = np.diff(prices)
-price_states = ['Up' if change > 0.001 else 'Down' if change < -0.001 else 'Stable' for change in price_changes]
-state_encoder = LabelEncoder()
-state_encoded = state_encoder.fit_transform(price_states)
-
-def compute_indicators(data):
-    
+def compute_indicators(data): 
     data['MACD'] = data['close'].ewm(span=12, adjust=False).mean() - data['close'].ewm(span=26, adjust=False).mean()
     data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
 
@@ -93,53 +89,54 @@ def compute_indicators(data):
     data['OBV'] = (np.sign(data['close'].diff()) * data['tickVolume']).cumsum()
     data['ADL'] = ((data['close'] - data['low']) - (data['high'] - data['close'])) / (data['high'] - data['low']) * data['tickVolume']
 
-    indicators = {
-        'MACD': data['MACD'],
-        'Signal_Line': data['Signal_Line'],
-        'RSI': data['RSI'],
-        'BB_Middle': data['BB_Middle'],
-        'BB_Upper': data['BB_Upper'],
-        'BB_Lower': data['BB_Lower'],
-        'ATR': data['ATR'],
-        'Momentum': data['Momentum'],
-        'ROC': data['ROC'],
-        'Stochastic': data['Stochastic'],
-        'WilliamsR': data['WilliamsR'],
-        'CCI': data['CCI'],
-        'CV': data['CV'],
-        'Donchian_Upper': data['Donchian_Upper'],
-        'Donchian_Lower': data['Donchian_Lower'],
-        'Std_Dev': data['Std_Dev'],
-        'OBV': data['OBV'],
-        'ADL': data['ADL']
-        }
+    return data  # Return the modified DataFrame with indicators added
 
-    # List of indicators
-    indicators = list(indicators.keys())
-    return indicators
-
-# Prepare data for training
 def prepare_data(data):
-    indicators = compute_indicators(data)
-    data.dropna(inplace=True)
+    # Compute and add indicators to data
+    data = compute_indicators(data)
+
+    # Fill NaN values with column means
+    data.fillna(data.mean(), inplace=True)
+    
+    data = data.drop(columns=["time"])
+    for col in data.columns:
+        print(col)
 
     X_scaler = MinMaxScaler()
     y_scaler = MinMaxScaler()
 
-    X = X_scaler.fit_transform(data[indicators])
-    y = data['close'].shift(-3).dropna().values.reshape(-1, 1)
+    # Select all columns except 'close' for X
+    features = [col for col in data.columns if col != 'close']
+    X = data[features].values  # Convert to NumPy array (2D shape)
+
+    # Ensure X is 2D before normalization
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+
+    X = X_scaler.fit_transform(X)
+
+    # Target variable y (ensure it's 2D)
+    y = data['close'].values.reshape(-1, 1)
     y_scaled = y_scaler.fit_transform(y)
 
+    # Save scalers
     with open(os.path.join(MODELS_DIR, "X_scaler.pkl"), "wb") as f:
         pickle.dump(X_scaler, f)
     with open(os.path.join(MODELS_DIR, "y_scaler.pkl"), "wb") as f:
         pickle.dump(y_scaler, f)
 
+    # Apply random masking to part of the data
+    mask_prob = 0.1
+    mask = np.random.rand(*X.shape) < mask_prob
+    X[:, 1:3] = np.where(mask[:, 1:3], 0, X[:, 1:3])  # Ensure X is 2D before applying
+    
+    # Create sequences for time-series modeling
     X_seq, y_seq = [], []
     sequence_length = 30
     for i in range(sequence_length, len(X) - 3):
         X_seq.append(X[i-sequence_length:i])
         y_seq.append(y_scaled[i][0])
+
     return np.array(X_seq), np.array(y_seq)
 
 X, y = prepare_data(data)
@@ -240,7 +237,18 @@ def evaluate_model(model, X_test, y_test, history):
     print("\nMost recent 20 predicted prices:")
     print(y_pred_inversed[-20:].flatten())
 
-    # Plot predictions vs actual values
+    # 1. Training & Validation Loss Plot
+    plt.figure(figsize=(10, 5))
+    plt.plot(history.history['loss'], label='Training Loss', linestyle='-', marker='o')
+    plt.plot(history.history['val_loss'], label='Validation Loss', linestyle='-', marker='s')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss (MSE)')
+    plt.title('Training & Validation Loss')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # 2. Predictions vs Actual Values
     plt.figure(figsize=(14, 6))
     plt.plot(y_test_inversed, label="Actual Prices", color='blue', alpha=0.7)
     plt.plot(y_pred_inversed, label="Predicted Prices", color='red', linestyle="dashed", alpha=0.7)
@@ -251,7 +259,31 @@ def evaluate_model(model, X_test, y_test, history):
     plt.grid(True)
     plt.show()
 
+    # 3. Residual Plot (Error Analysis)
+    residuals = y_test_inversed - y_pred_inversed
+    plt.figure(figsize=(10, 5))
+    sns.histplot(residuals, bins=50, kde=True, color="purple")
+    plt.axvline(x=0, color="black", linestyle="--", label="Zero Error")
+    plt.xlabel("Prediction Error")
+    plt.ylabel("Frequency")
+    plt.title("Residual Distribution (Prediction Errors)")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # 4. Moving Average Trend Comparison
+    plt.figure(figsize=(14, 6))
+    plt.plot(pd.Series(y_test_inversed.flatten()).rolling(20).mean(), label="Actual Moving Avg", color='blue')
+    plt.plot(pd.Series(y_pred_inversed.flatten()).rolling(20).mean(), label="Predicted Moving Avg", color='red', linestyle="dashed")
+    plt.xlabel("Time Steps")
+    plt.ylabel("Price")
+    plt.title("Moving Average Trend: Predicted vs Actual")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
     return y_pred_inversed, y_test_inversed
 
-# Call evaluation function
-y_pred_inversed, y_test_inversed = evaluate_model(model, X_test, y_test, history)
+# Call the function with the trained model and history
+evaluate_model(model, X_test, y_test, history)
+print("Files in models directory:", os.listdir(MODELS_DIR))
