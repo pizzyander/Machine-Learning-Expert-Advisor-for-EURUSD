@@ -25,43 +25,102 @@ token = settings.get('metaapi_access_token')
 account_id = settings.get('metaapi_accountid')
 symbol = 'EURUSD'
 domain = settings.get('domain') or 'agiliumtrade.agiliumtrade.ai'
+# File path
+csv_file_path = os.path.join(MODELS_DIR, "data.csv1")
 
 async def retrieve_historical_candles():
+    """Fetch historical candles, save them as CSV, and return a Pandas DataFrame."""
     api = MetaApi(token, {'domain': domain})
-    account = await api.metatrader_account_api.get_account(account_id)
+    
+    try:
+        account = await api.metatrader_account_api.get_account(account_id)
 
-    if account.state != 'DEPLOYED':
-        await account.deploy()
-    if account.connection_status != 'CONNECTED':
-        await account.wait_connected()
+        # Ensure the account is deployed and connected
+        print('Deploying account...')
+        if account.state != 'DEPLOYED':
+            await account.deploy()
+        else:
+            print('Account already deployed')
 
-    num_candles = 30000  # Fetch 10,000 candles
-    start_time = datetime.now(timezone.utc)  # Start from the latest available time
-    candles = []
+        print('Waiting for API server to connect to broker...')
+        if account.connection_status != 'CONNECTED':
+            await account.wait_connected()
 
-    while len(candles) < num_candles:
-        new_candles = await account.get_historical_candles(symbol, '4h', start_time)
-        if not new_candles:
-            break  # Stop if no new candles are retrieved
+        # Retrieve last 10K 4H candles
+        pages = 10
+        data = []  # We'll use 'data' to store all candles
+        start_time = None  # Start from the latest available data
 
-        candles.extend(new_candles)
-        start_time = pd.to_datetime(new_candles[-1]['time']) - timedelta(hours=4)  # Go back further
+        print(f'Downloading {pages}K latest candles for {symbol}')
+        started_at = datetime.now().timestamp()
 
-        if len(candles) >= num_candles:
-            break  # Stop once we reach 10,000 candles
+        for _ in range(pages):
+            new_candles = await account.get_historical_candles(symbol, '4h', start_time)
 
-    # Convert to DataFrame
-    data = pd.DataFrame(candles[:num_candles])  # Limit to 10,000 candles
+            if new_candles:
+                print(f'Downloaded {len(new_candles)} historical candles for {symbol}')
+        
+                # Append new data correctly to 'data'
+                data.extend(new_candles)  
 
-    if not data.empty:
-        data = data[['time', 'open', 'high', 'low', 'close', 'tickVolume']]
-        data['time'] = pd.to_datetime(data['time'])  # Ensure correct datetime format
+                # Fix: Move `start_time` to the **earliest** candle retrieved, not the latest
+                start_time = new_candles[0]['time']  # Move to the oldest candle
+                start_time -= timedelta(minutes=1)   # Move slightly earlier to avoid overlap
 
-    print(f"Retrieved {len(data)} candles.")  # Debugging line
-    return data
+            else:
+                print("No more candles available.")
+                break  # Stop if no more data is returned
 
-# Load and preprocess data
+        if data:
+            print(f'Total candles retrieved: {len(data)}')
+
+            # Convert list of dictionaries to DataFrame
+            df = pd.DataFrame(data)
+
+            # Convert 'time' column to datetime
+            df['time'] = pd.to_datetime(df['time'])
+
+            return df  # Return DataFrame directly
+
+    except Exception as err:
+        print(api.format_error(err))
+        return None
+    
+# Fetch data and plot
 data = asyncio.run(retrieve_historical_candles())
+
+def process_and_save_data(data, csv_filename="data.csv1", save_dir="models"):
+    """
+    Process the retrieved historical data:
+    - Convert 'time' column to datetime
+    - Sort by 'time' in ascending order
+    - Keep only the first 3500 observations
+    - Save the processed data as CSV
+    """
+    if data is None or data.empty:
+        print("❌ No data to process.")
+        return None
+
+    # Convert 'time' column to datetime
+    data['time'] = pd.to_datetime(data['time'])
+
+    # Sort DataFrame by 'time' in ascending order
+    data = data.sort_values(by='time', ascending=True)
+
+    # Keep only the top 3500 observations
+    data = data.iloc[3500:]
+
+    # Define full CSV file path
+    os.makedirs(save_dir, exist_ok=True)  # Ensure the directory exists
+    csv_path = os.path.join(save_dir, csv_filename)
+
+    # Save DataFrame to CSV
+    data.to_csv(csv_path, index=False)
+
+    return data  # Return the processed DataFrame
+
+# Example usage after retrieving data
+data = process_and_save_data(data)
 
 def compute_indicators(data): 
     data['MACD'] = data['close'].ewm(span=12, adjust=False).mean() - data['close'].ewm(span=26, adjust=False).mean()
@@ -94,13 +153,10 @@ def compute_indicators(data):
 def prepare_data(data):
     # Compute and add indicators to data
     data = compute_indicators(data)
-
+    data = data.drop(columns=["time", "brokerTime", "timeframe", "symbol", "spread", "volume"])
     # Fill NaN values with column means
     data.fillna(data.mean(), inplace=True)
-    
-    data = data.drop(columns=["time"])
-    for col in data.columns:
-        print(col)
+    print(data)
 
     X_scaler = MinMaxScaler()
     y_scaler = MinMaxScaler()
@@ -129,7 +185,7 @@ def prepare_data(data):
     mask_prob = 0.1
     mask = np.random.rand(*X.shape) < mask_prob
     X[:, 1:3] = np.where(mask[:, 1:3], 0, X[:, 1:3])  # Ensure X is 2D before applying
-    
+
     # Create sequences for time-series modeling
     X_seq, y_seq = [], []
     sequence_length = 30
