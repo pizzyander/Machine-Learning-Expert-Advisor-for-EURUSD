@@ -1,52 +1,40 @@
 import pandas as pd
-import os
-import matplotlib.pyplot as plt
+import numpy as np
 
-# Load CSV file into a Pandas DataFrame
-csv_file_path = "models/data.csv"  # Update the path if needed
+# Load the data
+csv_file_path = r"C:\Users\hp\Downloads\EURUSD_H4.csv"
 data = pd.read_csv(csv_file_path)
 
-# Convert 'time' column to datetime format
+# Convert 'time' column to datetime
 data['time'] = pd.to_datetime(data['time'])
 
 # Sort DataFrame by 'time' in descending order
-data = data.sort_values(by='time', ascending=False)
+data = data.sort_values(by='time', ascending=True)
 
-# Display the sorted DataFrame
-print(data.head())
-print(data.tail())
+# Get last close price (for Open in new row)
+last_close_price = data.iloc[0]['close']
+print(last_close_price)
 
-# Keep only the top 3500 observations
-data = data.iloc[:3500]  # OR eurusd4hdata.head(3500)
+# Compute mean for 'high', 'low', 'tickvolume' from last 2 observations
+mean_high = data.iloc[:2]['high'].mean()
+mean_low = data.iloc[:2]['low'].mean()
+mean_tickvolume = data.iloc[:2]['tickVolume'].mean()
 
+# Create a new empty row (NaN values)
+new_row = {col: np.nan for col in data.columns}
 
-# Define CSV file path
-csv_path = os.path.join("models", "data.csv1")
+# Fill in required values
+new_row['time'] = data.iloc[-1]['time'] + pd.Timedelta(hours=4)  # Assuming 4H timeframe
+new_row['open'] = last_close_price  # Last close → Open
+new_row['high'] = mean_high
+new_row['low'] = mean_low
+new_row['tickVolume'] = mean_tickvolume
 
-# Save DataFrame to CSV
-data.to_csv(csv_path, index=False)
+# Append the new row at the bottom
+data = pd.concat([data, pd.DataFrame([new_row])], ignore_index=True)
 
-print(f"Data saved to {csv_path}")
+# Display the updated DataFrame
+print(data.tail())  # Check last few rows
 
-def plot_close_price(data):
-   
-    # Ensure 'time' is in datetime format
-    data['time'] = pd.to_datetime(data['time'])
+print(data.columns)
 
-    # Plot close price over time
-    plt.figure(figsize=(10, 6))
-    plt.plot(data['time'], data['close'], label="Close Price", color='blue')
-    plt.title("Close Price Over Time")
-    plt.xlabel("Date and Time")
-    plt.ylabel("Close Price")
-    plt.grid(True)
-
-    # Format the x-axis to show date and time clearly
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-
-    # Show the plot
-    plt.legend()
-    plt.show()
-
-plot_close_price(data)
